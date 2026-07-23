@@ -1,0 +1,64 @@
+# HF Spaces / Dockerfile (CPU-only) with optional model pre-download
+# Usage:
+# - To build without pre-downloading the model (faster builds / CI):
+#     docker build -f Dockerfile.hf --build-arg PRE_DOWNLOAD=false -t chattts:latest .
+# - To build and pre-download the model into the image (will increase build time):
+#     docker build -f Dockerfile.hf --build-arg PRE_DOWNLOAD=true --build-arg HF_HUB_TOKEN=<your_token> -t chattts:latest .
+
+FROM python:3.10-slim
+
+ARG PRE_DOWNLOAD=false
+ARG HF_HUB_TOKEN=""
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+
+ENV DEVICE=cpu
+ENV OPEN_BROWSER=false
+ENV PORT=7860
+
+# Make HF token available at build/run time if provided
+ENV HF_HUB_TOKEN=${HF_HUB_TOKEN}
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      build-essential \
+      git \
+      ffmpeg \
+      libsndfile1 \
+      wget \
+      && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY . /app
+
+RUN pip install --upgrade pip setuptools wheel
+
+# Install PyTorch CPU, huggingface_hub and modelscope (modelscope may be optional depending on source)
+RUN pip install --extra-index-url https://download.pytorch.org/whl/cpu torch huggingface_hub modelscope
+
+# Optionally pre-download the model into /app/models to avoid run-time downloads
+# Controlled by build arg PRE_DOWNLOAD (default false)
+RUN if [ "${PRE_DOWNLOAD}" = "true" ] ; then \
+      python - << 'PY'
+import os
+from huggingface_hub import snapshot_download
+os.environ['HF_HUB_CACHE'] = '/app/models'
+print('Downloading 2Noise/ChatTTS to /app/models (this can be large and slow)...')
+snapshot_download(repo_id='2Noise/ChatTTS', cache_dir='/app/models', allow_patterns=['*.pt','*.yaml'])
+print('Download complete.')
+PY
+    else \
+      echo "Skipping model pre-download (PRE_DOWNLOAD not set)"; \
+    fi
+
+# Install other python deps (requirements.txt should NOT include torch)
+RUN if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+# Ensure start script is executable
+RUN chmod +x /app/start.sh || true
+
+EXPOSE 7860
+
+CMD ["./start.sh"]
